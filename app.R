@@ -16,7 +16,11 @@ ui <- shinydashboardPlus::dashboardPage(
     ),
     titleWidth = 300,
     controlbarIcon = icon("cogs"),
-    userOutput("userBox"),
+    shinydashboardPlus::dashboardUser(
+  name = "User",
+  subtitle = "Researcher",
+  image = "https://image.flaticon.com/icons/svg/236/236832.svg"
+),
     rightUi = tagList(
       actionButton("about_btn", "About", icon = icon("info-circle")),
       actionButton("help_btn", "Help", icon = icon("question-circle"))
