@@ -52,3 +52,17 @@ This application was developed using R and Shiny, with the following key package
 ## Citation
 
 If you use this application in your research, please cite:
+
+Author, A. (2025). Brain Network Analysis App: A streamlined approach for
+functional connectivity analysis in neuroscience. Journal of Neuroscience
+Methods, XX(X), XXX-XXX. doi:10.XXXX/XXXXX
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Contact
+
+For questions, suggestions, or bug reports, please contact:
+- Email: example@email.com
+- GitHub: https://github.com/yourusername/brain-network-analysis
