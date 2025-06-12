@@ -560,3 +560,210 @@ generate_region_information_plot <- function(info_flow_results) {
   
   return(p)
 }
+#########################################################
+# Enhanced Brain Network Analysis Shiny App
+# modules/advanced/information_theory.R - Information theory functions
+#########################################################
+
+#' Calculate mutual information between variables
+#' 
+#' @param data Data frame containing the variables
+#' @param x Column name for the first variable
+#' @param y Column name for the second variable
+#' @param bins Number of bins for discretization
+#' @return Mutual information value
+#' @export
+calculate_mutual_information <- function(data, x, y, bins = 6) {
+  # Discretize data
+  data_x <- cut(data[[x]], breaks = bins, labels = FALSE)
+  data_y <- cut(data[[y]], breaks = bins, labels = FALSE)
+  
+  # Create joint and marginal probability tables
+  joint_table <- table(data_x, data_y)
+  joint_prob <- joint_table / sum(joint_table)
+  
+  x_prob <- rowSums(joint_prob)
+  y_prob <- colSums(joint_prob)
+  
+  # Calculate mutual information
+  mi <- 0
+  for (i in 1:length(x_prob)) {
+    for (j in 1:length(y_prob)) {
+      if (joint_prob[i, j] > 0) {
+        mi <- mi + joint_prob[i, j] * log2(joint_prob[i, j] / (x_prob[i] * y_prob[j]))
+      }
+    }
+  }
+  
+  return(mi)
+}
+
+#' Calculate transfer entropy from X to Y
+#' 
+#' @param data Data frame containing the time series
+#' @param x Column name for source variable
+#' @param y Column name for target variable
+#' @param lag Lag value for time delay
+#' @param bins Number of bins for discretization
+#' @return Transfer entropy value
+#' @export
+calculate_transfer_entropy <- function(data, x, y, lag = 1, bins = 6) {
+  # Check if there's enough data
+  if (nrow(data) <= lag) {
+    return(NA)
+  }
+  
+  # Create lagged variables
+  y_t <- data[[y]][(lag+1):nrow(data)]
+  y_t_1 <- data[[y]][1:(nrow(data)-lag)]
+  x_t_1 <- data[[x]][1:(nrow(data)-lag)]
+  
+  # Discretize data
+  y_t_d <- cut(y_t, breaks = bins, labels = FALSE)
+  y_t_1_d <- cut(y_t_1, breaks = bins, labels = FALSE)
+  x_t_1_d <- cut(x_t_1, breaks = bins, labels = FALSE)
+  
+  # Create joint probability tables
+  joint_yy <- table(y_t_d, y_t_1_d) / length(y_t_d)
+  joint_yyx <- table(y_t_d, y_t_1_d, x_t_1_d) / length(y_t_d)
+  joint_yx <- table(y_t_1_d, x_t_1_d) / length(y_t_1_d)
+  
+  # Calculate transfer entropy
+  te <- 0
+  for (i in 1:bins) {
+    for (j in 1:bins) {
+      for (k in 1:bins) {
+        if (joint_yyx[i, j, k] > 0 && joint_yy[i, j] > 0 && joint_yx[j, k] > 0) {
+          te <- te + joint_yyx[i, j, k] * log2(joint_yyx[i, j, k] * sum(joint_yx) / (joint_yy[i, j] * joint_yx[j, k]))
+        }
+      }
+    }
+  }
+  
+  return(te)
+}
+
+#' Calculate multivariate information measures for a set of variables
+#' 
+#' @param data Data frame containing the variables
+#' @param vars Vector of column names for the variables
+#' @param bins Number of bins for discretization
+#' @return List containing mutual information, synergy, and redundancy matrices
+#' @export
+calculate_multivariate_information <- function(data, vars, bins = 6) {
+  n_vars <- length(vars)
+  
+  # Initialize matrices
+  mi_matrix <- matrix(0, n_vars, n_vars)
+  te_matrix <- matrix(0, n_vars, n_vars)
+  synergy_matrix <- matrix(0, n_vars, n_vars)
+  redundancy_matrix <- matrix(0, n_vars, n_vars)
+  
+  # Calculate pairwise metrics
+  for (i in 1:n_vars) {
+    for (j in 1:n_vars) {
+      if (i != j) {
+        # Calculate mutual information
+        mi_matrix[i, j] <- calculate_mutual_information(data, vars[i], vars[j], bins)
+        
+        # Calculate transfer entropy
+        te_matrix[i, j] <- calculate_transfer_entropy(data, vars[i], vars[j], lag = 1, bins)
+      }
+    }
+  }
+  
+  # Calculate synergy and redundancy for pairs with a third variable
+  for (i in 1:n_vars) {
+    for (j in 1:n_vars) {
+      if (i != j) {
+        # Find third variables with highest mutual information with both i and j
+        other_vars <- setdiff(1:n_vars, c(i, j))
+        if (length(other_vars) > 0) {
+          mi_i_others <- mi_matrix[i, other_vars]
+          mi_j_others <- mi_matrix[j, other_vars]
+          combined_mi <- mi_i_others + mi_j_others
+          
+          if (length(combined_mi) > 0) {
+            # Get index of third variable with highest combined MI
+            k <- other_vars[which.max(combined_mi)]
+            
+            # Calculate joint mutual information
+            joint_mi <- calculate_joint_mutual_information(data, vars[i], vars[j], vars[k], bins)
+            
+            # Calculate redundancy and synergy
+            redundancy_matrix[i, j] <- min(mi_matrix[i, k], mi_matrix[j, k])
+            synergy_matrix[i, j] <- joint_mi - mi_matrix[i, k] - mi_matrix[j, k] + redundancy_matrix[i, j]
+          }
+        }
+      }
+    }
+  }
+  
+  # Set row and column names
+  rownames(mi_matrix) <- vars
+  colnames(mi_matrix) <- vars
+  rownames(te_matrix) <- vars
+  colnames(te_matrix) <- vars
+  rownames(synergy_matrix) <- vars
+  colnames(synergy_matrix) <- vars
+  rownames(redundancy_matrix) <- vars
+  colnames(redundancy_matrix) <- vars
+  
+  return(list(
+    mutual_information = mi_matrix,
+    transfer_entropy = te_matrix,
+    synergy = synergy_matrix,
+    redundancy = redundancy_matrix
+  ))
+}
+
+#' Calculate joint mutual information between three variables
+#' 
+#' @param data Data frame containing the variables
+#' @param x Column name for the first variable
+#' @param y Column name for the second variable
+#' @param z Column name for the third variable
+#' @param bins Number of bins for discretization
+#' @return Joint mutual information value
+#' @export
+calculate_joint_mutual_information <- function(data, x, y, z, bins = 6) {
+  # Discretize data
+  data_x <- cut(data[[x]], breaks = bins, labels = FALSE)
+  data_y <- cut(data[[y]], breaks = bins, labels = FALSE)
+  data_z <- cut(data[[z]], breaks = bins, labels = FALSE)
+  
+  # Create XY variable
+  data_xy <- (data_x - 1) * bins + data_y
+  
+  # Calculate mutual information between XY and Z
+  mi_xy_z <- calculate_mutual_information_discrete(data_xy, data_z)
+  
+  return(mi_xy_z)
+}
+
+#' Calculate mutual information between discrete variables
+#' 
+#' @param x Vector of discrete values
+#' @param y Vector of discrete values
+#' @return Mutual information value
+#' @export
+calculate_mutual_information_discrete <- function(x, y) {
+  # Create joint and marginal probability tables
+  joint_table <- table(x, y)
+  joint_prob <- joint_table / sum(joint_table)
+  
+  x_prob <- rowSums(joint_prob)
+  y_prob <- colSums(joint_prob)
+  
+  # Calculate mutual information
+  mi <- 0
+  for (i in 1:length(x_prob)) {
+    for (j in 1:length(y_prob)) {
+      if (joint_prob[i, j] > 0) {
+        mi <- mi + joint_prob[i, j] * log2(joint_prob[i, j] / (x_prob[i] * y_prob[j]))
+      }
+    }
+  }
+  
+  return(mi)
+}
