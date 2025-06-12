@@ -1,523 +1,751 @@
 #########################################################
 # Enhanced Brain Network Analysis Shiny App
-# modules/preprocess/utils.R - Preprocessing utility functions
+# preprocess/utils.R - Preprocessing utility functions
 #########################################################
 
-#' Analyze missing data in the dataset
+#' Detect data types and suggest preprocessing steps
 #' 
 #' @param data Data frame to analyze
-#' @param region_columns Vector of column names for brain regions
-#' @return A list with missing data statistics
+#' @return List with data type information and preprocessing suggestions
 #' @export
-analyze_missing_data <- function(data, region_columns) {
-  # Initialize results
-  results <- list(
-    has_missing = FALSE,
-    total_missing = 0,
-    percent_missing = 0,
-    missing_by_region = NULL,
-    missing_by_subject = NULL
-  )
-  
-  # Check if data is valid
-  if (!is.data.frame(data) || length(region_columns) == 0) {
-    return(results)
+detect_data_properties <- function(data) {
+  # Check if data exists
+  if (is.null(data) || nrow(data) == 0) {
+    return(list(
+      valid = FALSE,
+      message = "No data provided or empty dataset."
+    ))
   }
   
-  # Extract region data
-  region_data <- data[, region_columns, drop = FALSE]
+  # Initialize results
+  results <- list(
+    valid = TRUE,
+    n_subjects = nrow(data),
+    n_variables = ncol(data),
+    variable_types = list(
+      numeric = character(0),
+      factor = character(0),
+      character = character(0),
+      date = character(0),
+      other = character(0)
+    ),
+    missing_data = list(
+      has_missing = FALSE,
+      columns_with_missing = character(0),
+      missing_pattern = NULL
+    ),
+    outliers = list(
+      has_outliers = FALSE,
+      columns_with_outliers = character(0)
+    ),
+    preprocessing_needed = list(
+      imputation = FALSE,
+      normalization = FALSE,
+      transformation = FALSE,
+      outlier_treatment = FALSE
+    ),
+    preprocessing_suggestions = character(0)
+  )
   
-  # Count missing values
-  missing_by_region <- colSums(is.na(region_data))
-  missing_by_subject <- rowSums(is.na(region_data))
+  # Analyze variable types
+  for (col_name in names(data)) {
+    col <- data[[col_name]]
+    
+    if (is.numeric(col)) {
+      results$variable_types$numeric <- c(results$variable_types$numeric, col_name)
+    } else if (is.factor(col)) {
+      results$variable_types$factor <- c(results$variable_types$factor, col_name)
+    } else if (is.character(col)) {
+      results$variable_types$character <- c(results$variable_types$character, col_name)
+    } else if (inherits(col, "Date") || inherits(col, "POSIXt")) {
+      results$variable_types$date <- c(results$variable_types$date, col_name)
+    } else {
+      results$variable_types$other <- c(results$variable_types$other, col_name)
+    }
+  }
   
-  total_missing <- sum(missing_by_region)
-  total_cells <- nrow(data) * length(region_columns)
-  percent_missing <- 100 * total_missing / total_cells
+  # Check for missing data
+  missing_counts <- colSums(is.na(data))
   
-  # Update results
-  results$has_missing <- total_missing > 0
-  results$total_missing <- total_missing
-  results$percent_missing <- percent_missing
-  results$missing_by_region <- missing_by_region
-  results$missing_by_subject <- missing_by_subject
+  if (any(missing_counts > 0)) {
+    results$missing_data$has_missing <- TRUE
+    results$missing_data$columns_with_missing <- names(missing_counts)[missing_counts > 0]
+    
+    # Calculate missing percentage
+    missing_percentage <- 100 * sum(missing_counts) / (nrow(data) * ncol(data))
+    results$missing_data$missing_percentage <- missing_percentage
+    
+    # Suggest imputation if missing data present
+    results$preprocessing_needed$imputation <- TRUE
+    
+    if (missing_percentage > 10) {
+      results$preprocessing_suggestions <- c(
+        results$preprocessing_suggestions,
+        paste0("High missingness (", round(missing_percentage, 1), 
+              "%). Consider using multiple imputation (MICE).")
+      )
+    } else {
+      results$preprocessing_suggestions <- c(
+        results$preprocessing_suggestions,
+        paste0("Missingness detected (", round(missing_percentage, 1), 
+              "%). Consider imputation.")
+      )
+    }
+  }
+  
+  # Check for skewness in numeric variables
+  numeric_cols <- results$variable_types$numeric
+  
+  if (length(numeric_cols) > 0 && requireNamespace("moments", quietly = TRUE)) {
+    skewness_values <- sapply(data[, numeric_cols, drop = FALSE], 
+                            function(x) moments::skewness(x, na.rm = TRUE))
+    highly_skewed <- names(skewness_values)[abs(skewness_values) > 1]
+    
+    if (length(highly_skewed) > 0) {
+      results$preprocessing_needed$transformation <- TRUE
+      
+      skewed_percentage <- 100 * length(highly_skewed) / length(numeric_cols)
+      
+      if (skewed_percentage > 25) {
+        results$preprocessing_suggestions <- c(
+          results$preprocessing_suggestions,
+          paste0(round(skewed_percentage, 1), 
+                "% of numeric variables are highly skewed. Consider transformation.")
+        )
+      }
+    }
+  }
+  
+  # Check for outliers
+  if (length(numeric_cols) > 0) {
+    outlier_cols <- character(0)
+    
+    for (col in numeric_cols) {
+      col_data <- data[[col]]
+      
+      # Calculate z-scores
+      if (sd(col_data, na.rm = TRUE) > 0) {
+        z_scores <- scale(col_data)
+        
+        # Check for outliers (|z| > 3)
+        if (any(abs(z_scores) > 3, na.rm = TRUE)) {
+          outlier_cols <- c(outlier_cols, col)
+        }
+      }
+    }
+    
+    if (length(outlier_cols) > 0) {
+      results$outliers$has_outliers <- TRUE
+      results$outliers$columns_with_outliers <- outlier_cols
+      results$preprocessing_needed$outlier_treatment <- TRUE
+      
+      outlier_percentage <- 100 * length(outlier_cols) / length(numeric_cols)
+      
+      results$preprocessing_suggestions <- c(
+        results$preprocessing_suggestions,
+        paste0("Outliers detected in ", round(outlier_percentage, 1), 
+              "% of numeric variables. Consider outlier treatment.")
+      )
+    }
+  }
+  
+  # Check for normalization needs
+  if (length(numeric_cols) > 0) {
+    # Check range variability
+    ranges <- sapply(data[, numeric_cols, drop = FALSE], 
+                   function(x) diff(range(x, na.rm = TRUE)))
+    
+    if (max(ranges) / min(ranges) > 10) {
+      results$preprocessing_needed$normalization <- TRUE
+      
+      results$preprocessing_suggestions <- c(
+        results$preprocessing_suggestions,
+        "Large differences in variable ranges. Consider normalization or standardization."
+      )
+    }
+  }
   
   return(results)
 }
 
-#' Detect outliers in the dataset
+#' Check for multicollinearity in numeric variables
 #' 
-#' @param data Data frame to analyze
-#' @param region_columns Vector of column names for brain regions
-#' @param method Outlier detection method ('iqr', 'zscore', 'mad')
-#' @param threshold Threshold for outlier detection
-#' @return A list with outlier information
+#' @param data Data frame with numeric variables
+#' @param threshold Correlation threshold for multicollinearity
+#' @return List with multicollinearity information
 #' @export
-detect_outliers <- function(data, region_columns, method = "iqr", threshold = 2.5) {
-  # Initialize results
-  results <- list(
-    method = method,
-    threshold = threshold,
-    outliers_by_region = list(),
-    total_outliers = 0
-  )
+check_multicollinearity <- function(data, threshold = 0.7) {
+  # Extract numeric columns
+  numeric_cols <- names(data)[sapply(data, is.numeric)]
   
-  # Check if data is valid
-  if (!is.data.frame(data) || length(region_columns) == 0 || method == "none") {
-    return(results)
+  if (length(numeric_cols) < 2) {
+    return(list(
+      has_multicollinearity = FALSE,
+      message = "Less than 2 numeric variables. Multicollinearity check not applicable."
+    ))
   }
   
-  # Detect outliers for each region
-  outliers_by_region <- list()
+  # Calculate correlation matrix
+  cor_matrix <- cor(data[, numeric_cols, drop = FALSE], 
+                  use = "pairwise.complete.obs")
   
-  for (region in region_columns) {
-    values <- data[[region]]
+  # Find high correlations (excluding self-correlations)
+  high_cors <- which(abs(cor_matrix) > threshold & abs(cor_matrix) < 1, arr.ind = TRUE)
+  
+  if (nrow(high_cors) == 0) {
+    return(list(
+      has_multicollinearity = FALSE,
+      message = "No multicollinearity detected."
+    ))
+  }
+  
+  # Create results
+  results <- list(
+    has_multicollinearity = TRUE,
+    correlation_matrix = cor_matrix,
+    high_correlations = data.frame(
+      Variable1 = character(0),
+      Variable2 = character(0),
+      Correlation = numeric(0),
+      stringsAsFactors = FALSE
+    )
+  )
+  
+  # Add high correlations to results (avoiding duplicates)
+  for (i in 1:nrow(high_cors)) {
+    row_idx <- high_cors[i, 1]
+    col_idx <- high_cors[i, 2]
     
-    # Skip if all values are NA
-    if (all(is.na(values))) {
-      outliers_by_region[[region]] <- integer(0)
+    if (row_idx < col_idx) {  # Avoid duplicates
+      results$high_correlations <- rbind(
+        results$high_correlations,
+        data.frame(
+          Variable1 = numeric_cols[row_idx],
+          Variable2 = numeric_cols[col_idx],
+          Correlation = cor_matrix[row_idx, col_idx],
+          stringsAsFactors = FALSE
+        )
+      )
+    }
+  }
+  
+  # Sort by absolute correlation
+  results$high_correlations <- results$high_correlations[
+    order(abs(results$high_correlations$Correlation), decreasing = TRUE),
+  ]
+  
+  # Add message
+  results$message <- paste0(
+    "Multicollinearity detected between ", nrow(results$high_correlations), 
+    " variable pairs (|r| > ", threshold, ")."
+  )
+  
+  return(results)
+}
+
+#' Apply z-score standardization to numeric variables
+#' 
+#' @param data Data frame with variables to standardize
+#' @param columns Columns to standardize (NULL for all numeric)
+#' @param center Whether to center variables (subtract mean)
+#' @param scale Whether to scale variables (divide by sd)
+#' @return Data frame with standardized variables
+#' @export
+standardize_variables <- function(data, columns = NULL, center = TRUE, scale = TRUE) {
+  # Check input
+  if (!is.data.frame(data)) {
+    stop("Input must be a data frame")
+  }
+  
+  # If no columns specified, use all numeric columns
+  if (is.null(columns)) {
+    columns <- names(data)[sapply(data, is.numeric)]
+  }
+  
+  # Check if columns exist
+  invalid_cols <- setdiff(columns, names(data))
+  
+  if (length(invalid_cols) > 0) {
+    stop("Invalid column names: ", paste(invalid_cols, collapse = ", "))
+  }
+  
+  # Filter for numeric columns
+  non_numeric <- columns[!sapply(data[, columns, drop = FALSE], is.numeric)]
+  
+  if (length(non_numeric) > 0) {
+    warning("Non-numeric columns will be skipped: ", paste(non_numeric, collapse = ", "))
+    columns <- setdiff(columns, non_numeric)
+  }
+  
+  if (length(columns) == 0) {
+    warning("No numeric columns to standardize")
+    return(data)
+  }
+  
+  # Standardize columns
+  standardized_data <- data
+  
+  for (col in columns) {
+    col_data <- data[[col]]
+    
+    if (all(is.na(col_data))) {
+      warning("Column '", col, "' contains only missing values. Skipping.")
       next
     }
     
-    # Apply detection method
-    if (method == "iqr") {
-      # IQR method
-      q1 <- stats::quantile(values, 0.25, na.rm = TRUE)
-      q3 <- stats::quantile(values, 0.75, na.rm = TRUE)
-      iqr <- q3 - q1
-      lower_bound <- q1 - threshold * iqr
-      upper_bound <- q3 + threshold * iqr
-      
-      outliers <- which(values < lower_bound | values > upper_bound)
-    } else if (method == "zscore") {
-      # Z-score method
-      mean_val <- mean(values, na.rm = TRUE)
-      sd_val <- sd(values, na.rm = TRUE)
-      
-      if (sd_val == 0) {
-        outliers <- integer(0)
-      } else {
-        z_scores <- abs((values - mean_val) / sd_val)
-        outliers <- which(z_scores > threshold)
-      }
-    } else if (method == "mad") {
-      # Modified Z-score method using Median Absolute Deviation
-      median_val <- median(values, na.rm = TRUE)
-      mad_val <- stats::mad(values, na.rm = TRUE)
+    if (sd(col_data, na.rm = TRUE) == 0) {
+      warning("Column '", col, "' has zero standard deviation. Skipping.")
+      next
+    }
+    
+    # Standardize
+    standardized_data[[col]] <- scale(col_data, center = center, scale = scale)[, 1]
+  }
+  
+  return(standardized_data)
+}
+
+#' Apply min-max scaling to numeric variables
+#' 
+#' @param data Data frame with variables to scale
+#' @param columns Columns to scale (NULL for all numeric)
+#' @param new_min Minimum value in scaled data
+#' @param new_max Maximum value in scaled data
+#' @return Data frame with scaled variables
+#' @export
+minmax_scale_variables <- function(data, columns = NULL, new_min = 0, new_max = 1) {
+  # Check input
+  if (!is.data.frame(data)) {
+    stop("Input must be a data frame")
+  }
+  
+  # If no columns specified, use all numeric columns
+  if (is.null(columns)) {
+    columns <- names(data)[sapply(data, is.numeric)]
+  }
+  
+  # Check if columns exist
+  invalid_cols <- setdiff(columns, names(data))
+  
+  if (length(invalid_cols) > 0) {
+    stop("Invalid column names: ", paste(invalid_cols, collapse = ", "))
+  }
+  
+  # Filter for numeric columns
+  non_numeric <- columns[!sapply(data[, columns, drop = FALSE], is.numeric)]
+  
+  if (length(non_numeric) > 0) {
+    warning("Non-numeric columns will be skipped: ", paste(non_numeric, collapse = ", "))
+    columns <- setdiff(columns, non_numeric)
+  }
+  
+  if (length(columns) == 0) {
+    warning("No numeric columns to scale")
+    return(data)
+  }
+  
+  # Scale columns
+  scaled_data <- data
+  
+  for (col in columns) {
+    col_data <- data[[col]]
+    
+    if (all(is.na(col_data))) {
+      warning("Column '", col, "' contains only missing values. Skipping.")
+      next
+    }
+    
+    # Get min and max
+    min_val <- min(col_data, na.rm = TRUE)
+    max_val <- max(col_data, na.rm = TRUE)
+    
+    if (min_val == max_val) {
+      warning("Column '", col, "' has constant value. Skipping.")
+      next
+    }
+    
+    # Apply min-max scaling
+    scaled_data[[col]] <- new_min + (col_data - min_val) * 
+                        (new_max - new_min) / (max_val - min_val)
+  }
+  
+  return(scaled_data)
+}
+
+#' Apply robust scaling to numeric variables
+#' 
+#' @param data Data frame with variables to scale
+#' @param columns Columns to scale (NULL for all numeric)
+#' @param center Whether to center variables (subtract median)
+#' @param scale Whether to scale variables (divide by IQR)
+#' @return Data frame with scaled variables
+#' @export
+robust_scale_variables <- function(data, columns = NULL, center = TRUE, scale = TRUE) {
+  # Check input
+  if (!is.data.frame(data)) {
+    stop("Input must be a data frame")
+  }
+  
+  # If no columns specified, use all numeric columns
+  if (is.null(columns)) {
+    columns <- names(data)[sapply(data, is.numeric)]
+  }
+  
+  # Check if columns exist
+  invalid_cols <- setdiff(columns, names(data))
+  
+  if (length(invalid_cols) > 0) {
+    stop("Invalid column names: ", paste(invalid_cols, collapse = ", "))
+  }
+  
+  # Filter for numeric columns
+  non_numeric <- columns[!sapply(data[, columns, drop = FALSE], is.numeric)]
+  
+  if (length(non_numeric) > 0) {
+    warning("Non-numeric columns will be skipped: ", paste(non_numeric, collapse = ", "))
+    columns <- setdiff(columns, non_numeric)
+  }
+  
+  if (length(columns) == 0) {
+    warning("No numeric columns to scale")
+    return(data)
+  }
+  
+  # Scale columns
+  scaled_data <- data
+  
+  for (col in columns) {
+    col_data <- data[[col]]
+    
+    if (all(is.na(col_data))) {
+      warning("Column '", col, "' contains only missing values. Skipping.")
+      next
+    }
+    
+    # Get median and IQR
+    med <- median(col_data, na.rm = TRUE)
+    iqr_val <- IQR(col_data, na.rm = TRUE)
+    
+    if (iqr_val == 0) {
+      warning("Column '", col, "' has zero IQR. Using MAD instead.")
+      # Use median absolute deviation instead
+      mad_val <- mad(col_data, na.rm = TRUE)
       
       if (mad_val == 0) {
-        outliers <- integer(0)
-      } else {
-        # Modified Z-scores (using 0.6745 constant for normal distribution)
-        mod_z_scores <- abs(0.6745 * (values - median_val) / mad_val)
-        outliers <- which(mod_z_scores > threshold)
+        warning("Column '", col, "' has zero MAD. Skipping.")
+        next
+      }
+      
+      # Apply robust scaling with MAD
+      if (center && scale) {
+        scaled_data[[col]] <- (col_data - med) / mad_val
+      } else if (center) {
+        scaled_data[[col]] <- col_data - med
+      } else if (scale) {
+        scaled_data[[col]] <- col_data / mad_val
       }
     } else {
-      # Default: no outliers
-      outliers <- integer(0)
+      # Apply robust scaling with IQR
+      if (center && scale) {
+        scaled_data[[col]] <- (col_data - med) / iqr_val
+      } else if (center) {
+        scaled_data[[col]] <- col_data - med
+      } else if (scale) {
+        scaled_data[[col]] <- col_data / iqr_val
+      }
     }
-    
-    # Store outliers for this region
-    outliers_by_region[[region]] <- outliers
   }
   
-  # Calculate total outliers
-  total_outliers <- sum(sapply(outliers_by_region, length))
-  
-  # Update results
-  results$outliers_by_region <- outliers_by_region
-  results$total_outliers <- total_outliers
-  
-  return(results)
+  return(scaled_data)
 }
 
-#' Handle outliers in the dataset
+#' Apply various data transformations to numeric variables
 #' 
-#' @param data Data frame with outliers
-#' @param region_columns Vector of column names for brain regions
-#' @param outlier_info Outlier information from detect_outliers function
-#' @param method Handling method ('winsorize', 'na', 'remove')
-#' @return A list with updated data and handling summary
+#' @param data Data frame with variables to transform
+#' @param columns Columns to transform (NULL for all numeric)
+#' @param method Transformation method ("log", "sqrt", "boxcox", "yeo-johnson", "quantile")
+#' @return Data frame with transformed variables
 #' @export
-handle_outliers <- function(data, region_columns, outlier_info, method = "winsorize") {
-  # Check if data is valid
-  if (!is.data.frame(data) || length(region_columns) == 0) {
-    return(list(data = data, summary = "No valid data provided"))
+transform_variables <- function(data, columns = NULL, 
+                              method = "log") {
+  # Check input
+  if (!is.data.frame(data)) {
+    stop("Input must be a data frame")
   }
   
-  # Make a copy of the data
-  result_data <- data
+  # If no columns specified, use all numeric columns
+  if (is.null(columns)) {
+    columns <- names(data)[sapply(data, is.numeric)]
+  }
   
-  # Track affected rows
-  affected_rows <- integer(0)
+  # Check if columns exist
+  invalid_cols <- setdiff(columns, names(data))
   
-  # Apply handling method
-  if (method == "winsorize") {
-    # Winsorize outliers (cap at threshold)
-    for (region in names(outlier_info$outliers_by_region)) {
-      outliers <- outlier_info$outliers_by_region[[region]]
-      
-      if (length(outliers) > 0) {
-        values <- result_data[[region]]
-        
-        # Get bounds based on the detection method
-        if (outlier_info$method == "iqr") {
-          q1 <- stats::quantile(values, 0.25, na.rm = TRUE)
-          q3 <- stats::quantile(values, 0.75, na.rm = TRUE)
-          iqr <- q3 - q1
-          lower_bound <- q1 - outlier_info$threshold * iqr
-          upper_bound <- q3 + outlier_info$threshold * iqr
-        } else if (outlier_info$method == "zscore") {
-          mean_val <- mean(values, na.rm = TRUE)
-          sd_val <- sd(values, na.rm = TRUE)
-          lower_bound <- mean_val - outlier_info$threshold * sd_val
-          upper_bound <- mean_val + outlier_info$threshold * sd_val
-        } else if (outlier_info$method == "mad") {
-          median_val <- median(values, na.rm = TRUE)
-          mad_val <- stats::mad(values, na.rm = TRUE)
-          lower_bound <- median_val - outlier_info$threshold * mad_val / 0.6745
-          upper_bound <- median_val + outlier_info$threshold * mad_val / 0.6745
+  if (length(invalid_cols) > 0) {
+    stop("Invalid column names: ", paste(invalid_cols, collapse = ", "))
+  }
+  
+  # Filter for numeric columns
+  non_numeric <- columns[!sapply(data[, columns, drop = FALSE], is.numeric)]
+  
+  if (length(non_numeric) > 0) {
+    warning("Non-numeric columns will be skipped: ", paste(non_numeric, collapse = ", "))
+    columns <- setdiff(columns, non_numeric)
+  }
+  
+  if (length(columns) == 0) {
+    warning("No numeric columns to transform")
+    return(data)
+  }
+  
+  # Transform columns
+  transformed_data <- data
+  
+  for (col in columns) {
+    col_data <- data[[col]]
+    
+    if (all(is.na(col_data))) {
+      warning("Column '", col, "' contains only missing values. Skipping.")
+      next
+    }
+    
+    # Apply transformation
+    transformed <- switch(
+      tolower(method),
+      "log" = {
+        if (any(col_data <= 0, na.rm = TRUE)) {
+          min_val <- min(col_data, na.rm = TRUE)
+          offset <- ifelse(min_val <= 0, abs(min_val) + 1, 0)
+          warning("Column '", col, "' contains non-positive values. Adding offset of ", offset, ".")
+          log(col_data + offset)
         } else {
-          # Default: no action
-          next
+          log(col_data)
         }
-        
-        # Replace outliers with bounds
-        for (i in outliers) {
-          if (!is.na(values[i])) {
-            if (values[i] < lower_bound) {
-              result_data[i, region] <- lower_bound
-            } else if (values[i] > upper_bound) {
-              result_data[i, region] <- upper_bound
-            }
+      },
+      "sqrt" = {
+        if (any(col_data < 0, na.rm = TRUE)) {
+          min_val <- min(col_data, na.rm = TRUE)
+          offset <- ifelse(min_val < 0, abs(min_val) + 1e-6, 0)
+          warning("Column '", col, "' contains negative values. Adding offset of ", offset, ".")
+          sqrt(col_data + offset)
+        } else {
+          sqrt(col_data)
+        }
+      },
+      "boxcox" = {
+        if (requireNamespace("MASS", quietly = TRUE)) {
+          if (any(col_data <= 0, na.rm = TRUE)) {
+            min_val <- min(col_data, na.rm = TRUE)
+            offset <- ifelse(min_val <= 0, abs(min_val) + 1, 0)
+            warning("Column '", col, "' contains non-positive values. Adding offset of ", offset, ".")
+            col_data <- col_data + offset
+          }
+          
+          # Find optimal lambda
+          bc <- MASS::boxcox(col_data ~ 1, plotit = FALSE)
+          lambda <- bc$x[which.max(bc$y)]
+          
+          if (abs(lambda) < 0.01) {
+            # For lambda near zero, use log
+            log(col_data)
+          } else {
+            # For other lambda values, use power transformation
+            (col_data^lambda - 1) / lambda
+          }
+        } else {
+          warning("Package 'MASS' not available for Box-Cox transformation. Using log transform.")
+          if (any(col_data <= 0, na.rm = TRUE)) {
+            min_val <- min(col_data, na.rm = TRUE)
+            offset <- ifelse(min_val <= 0, abs(min_val) + 1, 0)
+            log(col_data + offset)
+          } else {
+            log(col_data)
           }
         }
-        
-        # Add to affected rows
-        affected_rows <- union(affected_rows, outliers)
-      }
-    }
-  } else if (method == "na") {
-    # Replace outliers with NA
-    for (region in names(outlier_info$outliers_by_region)) {
-      outliers <- outlier_info$outliers_by_region[[region]]
-      
-      if (length(outliers) > 0) {
-        result_data[outliers, region] <- NA
-        
-        # Add to affected rows
-        affected_rows <- union(affected_rows, outliers)
-      }
-    }
-  } else if (method == "remove") {
-    # Get all rows with outliers
-    all_outlier_rows <- integer(0)
-    
-    for (region in names(outlier_info$outliers_by_region)) {
-      outliers <- outlier_info$outliers_by_region[[region]]
-      all_outlier_rows <- union(all_outlier_rows, outliers)
-    }
-    
-    # Remove rows with outliers
-    if (length(all_outlier_rows) > 0 && length(all_outlier_rows) < nrow(data)) {
-      result_data <- result_data[-all_outlier_rows, ]
-      affected_rows <- all_outlier_rows
-    }
-  }
-  
-  # Return results
-  list(
-    data = result_data,
-    affected_rows = affected_rows,
-    num_affected = length(affected_rows)
-  )
-}
-
-#' Transform data using various methods
-#' 
-#' @param values Vector of values to transform
-#' @param method Transformation method
-#' @param log_plus_one Whether to add 1 before log transformation
-#' @param boxcox_lambda Lambda parameter for Box-Cox transformation
-#' @return Transformed values
-#' @export
-transform_data <- function(values, method = "none", log_plus_one = TRUE, boxcox_lambda = NULL) {
-  # Check if values is valid
-  if (length(values) == 0) {
-    return(values)
-  }
-  
-  # Remove NA values for calculations
-  na_indices <- which(is.na(values))
-  valid_values <- values[!is.na(values)]
-  
-  # Apply transformation method
-  if (method == "zscore") {
-    # Z-score standardization
-    mean_val <- mean(valid_values)
-    sd_val <- sd(valid_values)
-    
-    if (sd_val == 0) {
-      transformed <- valid_values
-    } else {
-      transformed <- (valid_values - mean_val) / sd_val
-    }
-  } else if (method == "minmax") {
-    # Min-max scaling to [0, 1]
-    min_val <- min(valid_values)
-    max_val <- max(valid_values)
-    
-    if (max_val == min_val) {
-      transformed <- valid_values
-    } else {
-      transformed <- (valid_values - min_val) / (max_val - min_val)
-    }
-  } else if (method == "log") {
-    # Log transformation
-    if (any(valid_values <= 0) && log_plus_one) {
-      # log(x + 1) transformation
-      transformed <- log(valid_values + 1)
-    } else if (!any(valid_values <= 0)) {
-      # Regular log transformation
-      transformed <- log(valid_values)
-    } else {
-      # Can't apply log to non-positive values
-      transformed <- valid_values
-    }
-  } else if (method == "sqrt") {
-    # Square root transformation
-    if (any(valid_values < 0)) {
-      # Can't apply sqrt to negative values
-      transformed <- valid_values
-    } else {
-      transformed <- sqrt(valid_values)
-    }
-  } else if (method == "boxcox") {
-    # Box-Cox transformation
-    if (requireNamespace("MASS", quietly = TRUE) && all(valid_values > 0)) {
-      if (is.null(boxcox_lambda)) {
-        # Find optimal lambda
-        bc <- MASS::boxcox(valid_values ~ 1, plotit = FALSE)
-        lambda <- bc$x[which.max(bc$y)]
-      } else {
-        lambda <- boxcox_lambda
-      }
-      
-      if (abs(lambda) < 0.01) {
-        # Log transformation if lambda is close to 0
-        transformed <- log(valid_values)
-      } else {
-        # Regular Box-Cox transformation
-        transformed <- (valid_values^lambda - 1) / lambda
-      }
-    } else {
-      # Can't apply Box-Cox to non-positive values or MASS not available
-      transformed <- valid_values
-    }
-  } else {
-    # Default: no transformation
-    transformed <- valid_values
-  }
-  
-  # Reconstruct result with NAs in original positions
-  result <- values
-  result[!is.na(values)] <- transformed
-  
-  return(result)
-}
-
-#' Impute missing values in the dataset
-#' 
-#' @param data Data frame with missing values
-#' @param region_columns Vector of column names for brain regions
-#' @param method Imputation method ('mean', 'median', 'knn', 'mice')
-#' @param k Number of neighbors for KNN imputation
-#' @param mice_method Method for MICE imputation
-#' @return A list with imputed data and parameters
-#' @export
-impute_missing_values <- function(data, region_columns, method = "mean", k = 5, mice_method = "pmm") {
-  # Check if data is valid
-  if (!is.data.frame(data) || length(region_columns) == 0) {
-    return(list(data = data, parameters = NULL))
-  }
-  
-  # Make a copy of the data
-  result_data <- data
-  parameters <- list(method = method)
-  
-  # Apply imputation method
-  if (method == "mean") {
-    # Mean imputation
-    for (col in region_columns) {
-      values <- result_data[[col]]
-      
-      if (any(is.na(values))) {
-        mean_val <- mean(values, na.rm = TRUE)
-        result_data[[col]][is.na(values)] <- mean_val
-      }
-    }
-  } else if (method == "median") {
-    # Median imputation
-    for (col in region_columns) {
-      values <- result_data[[col]]
-      
-      if (any(is.na(values))) {
-        median_val <- median(values, na.rm = TRUE)
-        result_data[[col]][is.na(values)] <- median_val
-      }
-    }
-  } else if (method == "knn") {
-    # KNN imputation using VIM package
-    if (requireNamespace("VIM", quietly = TRUE)) {
-      # Extract region data
-      region_data <- result_data[, region_columns, drop = FALSE]
-      
-      # Perform KNN imputation
-      imputed_data <- VIM::kNN(region_data, k = k)
-      
-      # Remove imputation indicator columns
-      imputed_cols <- names(imputed_data)[!grepl("_imp$", names(imputed_data))]
-      imputed_data <- imputed_data[, imputed_cols, drop = FALSE]
-      
-      # Update result data
-      result_data[, region_columns] <- imputed_data
-      
-      # Store parameters
-      parameters$k <- k
-    }
-  } else if (method == "mice") {
-    # Multiple imputation using mice package
-    if (requireNamespace("mice", quietly = TRUE)) {
-      # Extract region data
-      region_data <- result_data[, region_columns, drop = FALSE]
-      
-      # Perform MICE imputation (single imputation for this purpose)
-      imputed_data <- mice::mice(region_data, m = 1, method = mice_method, printFlag = FALSE)
-      complete_data <- mice::complete(imputed_data)
-      
-      # Update result data
-      result_data[, region_columns] <- complete_data
-      
-      # Store parameters
-      parameters$mice_method <- mice_method
-    }
-  }
-  
-  # Return results
-  list(
-    data = result_data,
-    parameters = parameters
-  )
-}
-
-#' Run quality checks on the dataset
-#' 
-#' @param data Data frame to analyze
-#' @param region_columns Vector of column names for brain regions
-#' @return A list with quality check results
-#' @export
-run_quality_checks <- function(data, region_columns) {
-  # Initialize results
-  results <- list(
-    region_summary = NULL,
-    variance_check = NULL,
-    correlation_check = NULL
-  )
-  
-  # Check if data is valid
-  if (!is.data.frame(data) || length(region_columns) == 0) {
-    return(results)
-  }
-  
-  # Region summary statistics
-  region_summary <- data.frame(
-    Region = region_columns,
-    Mean = numeric(length(region_columns)),
-    Median = numeric(length(region_columns)),
-    SD = numeric(length(region_columns)),
-    Min = numeric(length(region_columns)),
-    Max = numeric(length(region_columns)),
-    Missing = numeric(length(region_columns)),
-    Missing_Percent = numeric(length(region_columns)),
-    CV = numeric(length(region_columns)),  # Coefficient of Variation
-    stringsAsFactors = FALSE
-  )
-  
-  for (i in seq_along(region_columns)) {
-    col <- region_columns[i]
-    values <- data[[col]]
-    
-    region_summary$Mean[i] <- mean(values, na.rm = TRUE)
-    region_summary$Median[i] <- median(values, na.rm = TRUE)
-    region_summary$SD[i] <- sd(values, na.rm = TRUE)
-    region_summary$Min[i] <- min(values, na.rm = TRUE)
-    region_summary$Max[i] <- max(values, na.rm = TRUE)
-    region_summary$Missing[i] <- sum(is.na(values))
-    region_summary$Missing_Percent[i] <- 100 * sum(is.na(values)) / length(values)
-    
-    # Coefficient of Variation (SD/Mean)
-    if (region_summary$Mean[i] != 0) {
-      region_summary$CV[i] <- region_summary$SD[i] / abs(region_summary$Mean[i])
-    } else {
-      region_summary$CV[i] <- NA
-    }
-  }
-  
-  # Variance check
-  variance_check <- data.frame(
-    Region = region_columns,
-    Variance = sapply(region_columns, function(col) var(data[[col]], na.rm = TRUE)),
-    CV = region_summary$CV,
-    Flag = "",
-    stringsAsFactors = FALSE
-  )
-  
-  # Flag low variance regions
-  low_var_threshold <- quantile(variance_check$Variance, 0.1, na.rm = TRUE)
-  variance_check$Flag[variance_check$Variance < low_var_threshold] <- "Low Variance"
-  
-  # Correlation check
-  correlation_check <- data.frame(
-    Region1 = character(),
-    Region2 = character(),
-    Correlation = numeric(),
-    stringsAsFactors = FALSE
-  )
-  
-  if (length(region_columns) > 1) {
-    # Calculate correlation matrix
-    cor_matrix <- cor(data[, region_columns], use = "pairwise.complete.obs")
-    
-    # Find high correlations
-    high_cor_threshold <- 0.8
-    high_cor_indices <- which(abs(cor_matrix) > high_cor_threshold & abs(cor_matrix) < 1, arr.ind = TRUE)
-    
-    if (nrow(high_cor_indices) > 0) {
-      # Create data frame of high correlations
-      for (i in 1:nrow(high_cor_indices)) {
-        row_idx <- high_cor_indices[i, 1]
-        col_idx <- high_cor_indices[i, 2]
-        
-        # Only include each pair once (upper triangle)
-        if (row_idx < col_idx) {
-          correlation_check <- rbind(correlation_check, data.frame(
-            Region1 = region_columns[row_idx],
-            Region2 = region_columns[col_idx],
-            Correlation = cor_matrix[row_idx, col_idx],
-            stringsAsFactors = FALSE
-          ))
+      },
+      "yeo-johnson" = {
+        if (requireNamespace("bestNormalize", quietly = TRUE)) {
+          yeojohnson_obj <- bestNormalize::yeojohnson(col_data)
+          yeojohnson_obj$x.t
+        } else {
+          warning("Package 'bestNormalize' not available for Yeo-Johnson transformation. Using log transform.")
+          if (any(col_data <= 0, na.rm = TRUE)) {
+            min_val <- min(col_data, na.rm = TRUE)
+            offset <- ifelse(min_val <= 0, abs(min_val) + 1, 0)
+            log(col_data + offset)
+          } else {
+            log(col_data)
+          }
+        }
+      },
+      "quantile" = {
+        if (requireNamespace("bestNormalize", quietly = TRUE)) {
+          orderNorm_obj <- bestNormalize::orderNorm(col_data)
+          orderNorm_obj$x.t
+        } else {
+          warning("Package 'bestNormalize' not available for quantile transformation. Using rank transform.")
+          # Simple rank-based normalization
+          ranks <- rank(col_data, na.last = "keep", ties.method = "average")
+          n <- sum(!is.na(col_data))
+          qnorm((ranks - 0.5) / n)
+        }
+      },
+      # Default to log transform
+      {
+        warning("Unknown transformation method '", method, "'. Using log transform.")
+        if (any(col_data <= 0, na.rm = TRUE)) {
+          min_val <- min(col_data, na.rm = TRUE)
+          offset <- ifelse(min_val <= 0, abs(min_val) + 1, 0)
+          log(col_data + offset)
+        } else {
+          log(col_data)
         }
       }
-      
-      # Sort by absolute correlation
-      correlation_check <- correlation_check[order(-abs(correlation_check$Correlation)), ]
-    }
+    )
+    
+    # Set transformed values
+    transformed_data[[col]] <- transformed
   }
   
-  # Update results
-  results$region_summary <- region_summary
-  results$variance_check <- variance_check
-  results$correlation_check <- correlation_check
+  return(transformed_data)
+}
+
+#' Suggest optimal data transformation for skewed variables
+#' 
+#' @param data Data frame with variables to analyze
+#' @param columns Columns to analyze (NULL for all numeric)
+#' @param skewness_threshold Threshold for detecting skewed distributions
+#' @return List with transformation suggestions
+#' @export
+suggest_transformations <- function(data, columns = NULL, skewness_threshold = 0.8) {
+  # Check input
+  if (!is.data.frame(data)) {
+    stop("Input must be a data frame")
+  }
   
-  return(results)
+  # Check if moments package is available
+  if (!requireNamespace("moments", quietly = TRUE)) {
+    warning("Package 'moments' not available. Using simplified skewness calculation.")
+    has_moments <- FALSE
+  } else {
+    has_moments <- TRUE
+  }
+  
+  # If no columns specified, use all numeric columns
+  if (is.null(columns)) {
+    columns <- names(data)[sapply(data, is.numeric)]
+  }
+  
+  # Check if columns exist
+  invalid_cols <- setdiff(columns, names(data))
+  
+  if (length(invalid_cols) > 0) {
+    stop("Invalid column names: ", paste(invalid_cols, collapse = ", "))
+  }
+  
+  # Filter for numeric columns
+  non_numeric <- columns[!sapply(data[, columns, drop = FALSE], is.numeric)]
+  
+  if (length(non_numeric) > 0) {
+    warning("Non-numeric columns will be skipped: ", paste(non_numeric, collapse = ", "))
+    columns <- setdiff(columns, non_numeric)
+  }
+  
+  if (length(columns) == 0) {
+    warning("No numeric columns to analyze")
+    return(list(
+      suggestions = data.frame(
+        Column = character(0),
+        Skewness = numeric(0),
+        Suggestion = character(0),
+        stringsAsFactors = FALSE
+      ),
+      message = "No numeric columns to analyze"
+    ))
+  }
+  
+  # Analyze columns
+  results <- data.frame(
+    Column = character(0),
+    Skewness = numeric(0),
+    Suggestion = character(0),
+    stringsAsFactors = FALSE
+  )
+  
+  for (col in columns) {
+    col_data <- data[[col]]
+    
+    if (all(is.na(col_data))) {
+      next  # Skip if all NA
+    }
+    
+    # Calculate skewness
+    if (has_moments) {
+      skewness <- moments::skewness(col_data, na.rm = TRUE)
+    } else {
+      # Simple skewness calculation
+      n <- sum(!is.na(col_data))
+      m <- mean(col_data, na.rm = TRUE)
+      s <- sd(col_data, na.rm = TRUE)
+      
+      if (s == 0) {
+        skewness <- 0
+      } else {
+        skewness <- sum((col_data - m)^3, na.rm = TRUE) / ((n - 1) * s^3)
+      }
+    }
+    
+    # Determine suggestion based on skewness
+    if (abs(skewness) <= skewness_threshold) {
+      suggestion <- "No transformation needed"
+    } else if (skewness > skewness_threshold) {
+      # Positive skew
+      if (any(col_data <= 0, na.rm = TRUE)) {
+        suggestion <- "Yeo-Johnson or Quantile transformation"
+      } else if (skewness > 3) {
+        suggestion <- "Log transformation"
+      } else {
+        suggestion <- "Square root transformation"
+      }
+    } else {  # skewness < -skewness_threshold
+      # Negative skew
+      if (any(col_data <= 0, na.rm = TRUE)) {
+        suggestion <- "Yeo-Johnson or Quantile transformation"
+      } else {
+        suggestion <- "Square transformation"
+      }
+    }
+    
+    # Add to results
+    results <- rbind(
+      results,
+      data.frame(
+        Column = col,
+        Skewness = skewness,
+        Suggestion = suggestion,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+  
+  # Sort by absolute skewness
+  results <- results[order(abs(results$Skewness), decreasing = TRUE), ]
+  
+  # Create message
+  skewed_cols <- results$Column[abs(results$Skewness) > skewness_threshold]
+  
+  if (length(skewed_cols) == 0) {
+    message <- "No variables with significant skewness detected."
+  } else {
+    message <- paste0(
+      length(skewed_cols), " variable(s) with significant skewness detected. ",
+      "Consider transformations for: ", paste(skewed_cols[1:min(3, length(skewed_cols))], collapse = ", "),
+      ifelse(length(skewed_cols) > 3, "...", "")
+    )
+  }
+  
+  return(list(
+    suggestions = results,
+    message = message
+  ))
 }
