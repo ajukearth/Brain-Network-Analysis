@@ -1,3 +1,225 @@
+
+#########################################################
+# Enhanced Brain Network Analysis Shiny App
+# modules/visualization/network_plot.R - Network plotting functions
+#########################################################
+
+#' Generate an interactive network plot
+#' 
+#' @param graph igraph object to plot
+#' @param layout Layout algorithm to use
+#' @param color_by Node attribute to use for coloring
+#' @param size_by Node attribute to use for sizing
+#' @param node_metrics Data frame with node metrics
+#' @param area_colors Color palette for brain areas
+#' @param show_labels Whether to show node labels
+#' @param use_3d Whether to use 3D visualization
+#' @return A plotly object
+#' @export
+plot_network <- function(graph, layout = "fr", color_by = "brain_area", 
+                        size_by = NULL, node_metrics = NULL, 
+                        area_colors = NULL, show_labels = FALSE, use_3d = FALSE) {
+  
+  # Check if metrics are provided
+  if (is.null(node_metrics)) {
+    node_metrics <- data.frame(
+      node = 1:igraph::vcount(graph),
+      name = igraph::V(graph)$name,
+      brain_area = ifelse(is.null(igraph::V(graph)$brain_area), "Other", igraph::V(graph)$brain_area),
+      degree = igraph::degree(graph),
+      betweenness = igraph::betweenness(graph, normalized = TRUE),
+      closeness = igraph::closeness(graph, normalized = TRUE),
+      clustering = igraph::transitivity(graph, type = "local", vids = igraph::V(graph))
+    )
+    
+    # Handle NA values in clustering coefficient
+    node_metrics$clustering[is.na(node_metrics$clustering)] <- 0
+  }
+  
+  # Generate layout
+  if (layout == "fr") {
+    layout_coords <- igraph::layout_with_fr(graph)
+  } else if (layout == "kk") {
+    layout_coords <- igraph::layout_with_kk(graph)
+  } else if (layout == "circle") {
+    layout_coords <- igraph::layout_in_circle(graph)
+  } else if (layout == "grid") {
+    layout_coords <- igraph::layout_on_grid(graph)
+  } else if (layout == "sphere" && use_3d) {
+    layout_coords <- igraph::layout_on_sphere(graph)
+  } else {
+    layout_coords <- igraph::layout_with_fr(graph)
+  }
+  
+  # Add Z dimension for 3D if needed
+  if (use_3d && ncol(layout_coords) < 3) {
+    layout_coords <- cbind(layout_coords, rep(0, nrow(layout_coords)))
+  }
+  
+  # Extract edges
+  edges <- igraph::as_data_frame(graph, what = "edges")
+  
+  # Get node colors
+  if (color_by == "brain_area") {
+    if (is.null(area_colors)) {
+      # Default colors if none provided
+      all_areas <- unique(node_metrics$brain_area)
+      area_colors <- setNames(
+        colorRampPalette(RColorBrewer::brewer.pal(min(9, length(all_areas)), "Set1"))(length(all_areas)),
+        all_areas
+      )
+    }
+    node_colors <- area_colors[node_metrics$brain_area]
+  } else {
+    # Color by metric
+    metric_values <- node_metrics[[color_by]]
+    color_palette <- colorRampPalette(c("blue", "white", "red"))(100)
+    color_indices <- cut(metric_values, breaks = 100, labels = FALSE, include.lowest = TRUE)
+    node_colors <- color_palette[color_indices]
+  }
+  
+  # Get node sizes
+  if (is.null(size_by) || size_by == "none") {
+    node_sizes <- rep(10, nrow(node_metrics))
+  } else {
+    # Size by metric
+    metric_values <- node_metrics[[size_by]]
+    size_range <- c(5, 20)
+    node_sizes <- scales::rescale(metric_values, to = size_range)
+  }
+  
+  # Prepare node data
+  nodes <- data.frame(
+    id = node_metrics$node,
+    label = node_metrics$name,
+    x = layout_coords[, 1],
+    y = layout_coords[, 2],
+    z = if (use_3d && ncol(layout_coords) >= 3) layout_coords[, 3] else rep(0, nrow(layout_coords)),
+    color = node_colors,
+    size = node_sizes,
+    brain_area = node_metrics$brain_area,
+    degree = node_metrics$degree,
+    betweenness = node_metrics$betweenness,
+    closeness = node_metrics$closeness,
+    clustering = node_metrics$clustering
+  )
+  
+  # Prepare edge data
+  edge_data <- data.frame(
+    x = c(rbind(layout_coords[edges$from, 1], layout_coords[edges$to, 1], NA)),
+    y = c(rbind(layout_coords[edges$from, 2], layout_coords[edges$to, 2], NA)),
+    z = if (use_3d && ncol(layout_coords) >= 3) {
+      c(rbind(layout_coords[edges$from, 3], layout_coords[edges$to, 3], NA))
+    } else {
+      rep(0, 3 * nrow(edges))
+    }
+  )
+  
+  # Create plot
+  if (use_3d) {
+    p <- plotly::plot_ly() %>%
+      # Add edges
+      plotly::add_trace(
+        data = edge_data,
+        x = ~x, y = ~y, z = ~z,
+        type = "scatter3d", mode = "lines",
+        line = list(color = "rgba(190, 190, 190, 0.5)", width = 1),
+        hoverinfo = "none",
+        showlegend = FALSE
+      ) %>%
+      # Add nodes
+      plotly::add_trace(
+        data = nodes,
+        x = ~x, y = ~y, z = ~z,
+        type = "scatter3d", mode = "markers",
+        marker = list(
+          color = ~color,
+          size = ~size,
+          line = list(color = "black", width = 0.5)
+        ),
+        text = ~paste(
+          "Node:", label, "<br>",
+          "Brain Area:", brain_area, "<br>",
+          "Degree:", degree, "<br>",
+          "Betweenness:", round(betweenness, 3), "<br>",
+          "Closeness:", round(closeness, 3), "<br>",
+          "Clustering:", round(clustering, 3)
+        ),
+        hoverinfo = "text"
+      )
+    
+    # Add labels if requested
+    if (show_labels) {
+      p <- p %>% plotly::add_trace(
+        data = nodes,
+        x = ~x, y = ~y, z = ~z,
+        type = "scatter3d", mode = "text",
+        text = ~label,
+        textposition = "top center",
+        textfont = list(size = 10),
+        hoverinfo = "none",
+        showlegend = FALSE
+      )
+    }
+    
+  } else {
+    # 2D plot
+    p <- plotly::plot_ly() %>%
+      # Add edges
+      plotly::add_trace(
+        data = edge_data,
+        x = ~x, y = ~y,
+        type = "scatter", mode = "lines",
+        line = list(color = "rgba(190, 190, 190, 0.5)", width = 1),
+        hoverinfo = "none",
+        showlegend = FALSE
+      ) %>%
+      # Add nodes
+      plotly::add_trace(
+        data = nodes,
+        x = ~x, y = ~y,
+        type = "scatter", mode = "markers",
+        marker = list(
+          color = ~color,
+          size = ~size,
+          line = list(color = "black", width = 0.5)
+        ),
+        text = ~paste(
+          "Node:", label, "<br>",
+          "Brain Area:", brain_area, "<br>",
+          "Degree:", degree, "<br>",
+          "Betweenness:", round(betweenness, 3), "<br>",
+          "Closeness:", round(closeness, 3), "<br>",
+          "Clustering:", round(clustering, 3)
+        ),
+        hoverinfo = "text"
+      )
+    
+    # Add labels if requested
+    if (show_labels) {
+      p <- p %>% plotly::add_trace(
+        data = nodes,
+        x = ~x, y = ~y,
+        type = "scatter", mode = "text",
+        text = ~label,
+        textposition = "top center",
+        textfont = list(size = 10),
+        hoverinfo = "none",
+        showlegend = FALSE
+      )
+    }
+  }
+  
+  # Add layout
+  p <- p %>% plotly::layout(
+    title = "Brain Network Graph",
+    showlegend = FALSE,
+    hovermode = "closest",
+    margin = list(l = 0, r = 0, b = 0, t = 40)
+  )
+  
+  return(p)
+}
 #########################################################
 # Enhanced Brain Network Analysis Shiny App
 # modules/visualization/network_plot.R - Network visualization functions
