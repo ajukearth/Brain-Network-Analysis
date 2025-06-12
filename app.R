@@ -10,18 +10,12 @@ source("global.R")
 ui <- shinydashboardPlus::dashboardPage(
   # Dashboard header
   shinydashboardPlus::dashboardHeader(
-    title = span(
-      img(src = "logo.png", height = 30),
-      "Brain Network Analysis"
-    ),
-    titleWidth = 300,
-    controlbarIcon = icon("cogs"),
-    userOutput("userBox"),
-    #rightUi = tagList(
-    #  actionButton("about_btn", "About", icon = icon("info-circle")),
-    #  actionButton("help_btn", "Help", icon = icon("question-circle"))
-    #)
+  title = tagList(
+    span(img(src = "logo.png", height = 30), "Brain Network Analysis")
   ),
+  titleWidth = 300,
+  controlbarIcon = icon("cogs")
+)
   
   # Dashboard sidebar
   shinydashboardPlus::dashboardSidebar(
