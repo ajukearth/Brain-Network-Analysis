@@ -1,153 +1,132 @@
 #########################################################
 # Enhanced Brain Network Analysis Shiny App
-# global.R - Global variables and package loading
+# global.R - Global configuration and constants
 #########################################################
 
 # Load required packages
-if (!require("pacman")) install.packages("pacman")
-pacman::p_load(
-  # Core packages
-  shiny,
-  shinydashboard,
-  shinydashboardPlus,
-  shinyjs,
-  shinyWidgets,
-  shinyBS,
-  DT,
-  
-  # Data manipulation
-  dplyr,
-  tidyr,
-  purrr,
-  stringr,
-  readr,
-  openxlsx,
-  
-  # Matrix operations
-  Matrix,
-  matrixcalc,
-  
-  # Statistics
-  corpcor,
-  huge,
-  glasso,
-  energy,
-  
-  # Visualization
-  ggplot2,
-  plotly,
-  heatmaply,
-  RColorBrewer,
-  viridis,
-  colourpicker,
-  
-  # Network analysis
-  igraph,
-  network,
-  sna,
-  netdiffuseR,
-  
-  # Advanced methods
-  boot,
-  kernlab,
-  
-  # Missing data handling
-  mice,
-  naniar,
-  
-  # Other utilities
-  patchwork,
-  knitr,
-  markdown,
-  scales
-)
+suppressPackageStartupMessages({
+  library(shiny)
+  library(shinydashboard)
+  library(shinydashboardPlus)
+  library(shinyjs)
+  library(DT)
+  library(dplyr)
+  library(ggplot2)
+  library(igraph)
+  library(reshape2)
+  library(tidyr)
+  library(readr)
+  library(openxlsx)
+  library(colourpicker)
+  library(RColorBrewer)
+  library(mice)
+  library(naniar)
+  library(ggraph)
+  library(scales)
+  library(plotly)
+})
 
-# Set global options
-options(shiny.maxRequestSize = 100 * 1024^2)  # 100MB file size limit
-options(DT.options = list(
-  pageLength = 10,
-  autoWidth = TRUE,
-  dom = 'Blfrtip',
-  buttons = c('copy', 'csv', 'excel')
-))
+# App version
+APP_VERSION <- "1.2.0"
 
-# Define global constants
-APP_VERSION <- "2.0.0"
-DEFAULT_THRESHOLD <- 0.3
-DEFAULT_CORR_METHOD <- "pearson"
-BOOTSTRAP_ITERATIONS <- 1000
-
-# Define correlation method options
+# Define correlation methods
 CORRELATION_METHODS <- list(
-  "Basic" = c(
-    "Pearson correlation" = "pearson",
-    "Spearman correlation" = "spearman",
-    "Kendall correlation" = "kendall"
-  ),
-  "Precision-based" = c(
-    "Partial correlation" = "partial",
-    "Sparse inverse covariance (glasso)" = "glasso",
-    "Shrinkage precision" = "shrinkage"
-  ),
-  "Distance-based" = c(
-    "Euclidean distance" = "euclidean",
-    "Distance correlation" = "distance",
-    "Mahalanobis distance" = "mahalanobis"
-  ),
-  "Ensemble" = c(
-    "Multi-method consensus" = "consensus",
-    "Rank aggregation" = "rank"
-  )
+  "Pearson" = "pearson",
+  "Spearman" = "spearman",
+  "Kendall" = "kendall",
+  "Distance Correlation" = "dcor",
+  "Mutual Information" = "mi",
+  "Partial Correlation" = "partial",
+  "Regularized Covariance" = "glasso"
 )
 
 # Define network metrics
 NETWORK_METRICS <- list(
-  "Global" = c(
-    "Density" = "density",
-    "Global clustering coefficient" = "clustering",
-    "Average path length" = "path_length",
-    "Modularity" = "modularity",
-    "Assortativity" = "assortativity",
-    "Small-worldness" = "small_world"
-  ),
-  "Node-level" = c(
-    "Degree centrality" = "degree",
-    "Betweenness centrality" = "betweenness",
-    "Closeness centrality" = "closeness",
-    "Eigenvector centrality" = "eigenvector",
-    "Local clustering coefficient" = "local_clustering",
-    "Participation coefficient" = "participation"
-  )
+  "Degree" = "degree",
+  "Betweenness Centrality" = "betweenness",
+  "Closeness Centrality" = "closeness", 
+  "Clustering Coefficient" = "clustering",
+  "Eigenvector Centrality" = "eigenvector",
+  "PageRank" = "pagerank",
+  "Hub Score" = "hub_score",
+  "Authority Score" = "authority_score"
 )
 
-# Define brain region groupings
-DEFAULT_BRAIN_AREAS <- list(
-  "Dorsal HPC" = c("dDG", "dCA1", "dCA2", "dCA3"),
-  "Ventral HPC" = c("vDG", "vCA1", "vCA3"),
-  "Subiculum" = c("dSub", "vSub"),
-  "Nucleus Accumbens" = c("NAc", "NAs"),
-  "Frontal" = c("ACC", "IL", "PRL"),
-  "Amygdala" = c("CeA", "BLA", "LA"),
-  "Retrosplenial" = c("RSGab", "RSGc", "RSD")
-)
-
-# Default area colors
+# Define default color palettes
 DEFAULT_AREA_COLORS <- c(
-  "Dorsal HPC" = "#D3ADC4",
-  "Ventral HPC" = "#C88AB1",
-  "Subiculum" = "#9B59B6",
-  "Nucleus Accumbens" = "#A3DFD7",
-  "Frontal" = "#FAE9BD",
-  "Amygdala" = "#F0BC94",
-  "Retrosplenial" = "#85C1E9",
-  "Other" = "#CCCCCC"
+  "Prefrontal" = "#E41A1C",
+  "Motor" = "#377EB8",
+  "Somatosensory" = "#4DAF4A",
+  "Parietal" = "#984EA3",
+  "Temporal" = "#FF7F00",
+  "Occipital" = "#FFFF33",
+  "Limbic" = "#A65628",
+  "Subcortical" = "#F781BF",
+  "Cerebellum" = "#999999",
+  "Other" = "#DDDDDD"
 )
 
-# Helper function to safely source all R files in a directory
-source_dir <- function(path) {
-  files <- list.files(path, pattern = "\\.R$", full.names = TRUE)
-  sapply(files, source)
+DEFAULT_GROUP_COLORS <- c(
+  "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
+  "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF"
+)
+
+# Default correlation thresholds
+DEFAULT_CORRELATION_THRESHOLD <- 0.3
+DEFAULT_P_VALUE_THRESHOLD <- 0.05
+
+# Create directory structure for results export
+create_results_directory <- function(base_dir = tempdir()) {
+  # Create timestamp for unique directory naming
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  results_dir <- file.path(base_dir, paste0("brain_network_results_", timestamp))
+  
+  # Create main directory
+  dir.create(results_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Create subdirectories
+  subdirs <- c(
+    "plots", 
+    "metrics", 
+    "correlation_matrices", 
+    "networks", 
+    "configs",
+    "advanced"
+  )
+  
+  dirs <- list()
+  for (subdir in subdirs) {
+    path <- file.path(results_dir, subdir)
+    dir.create(path, showWarnings = FALSE)
+    dirs[[subdir]] <- path
+  }
+  
+  # Return both the main directory and subdirectories
+  dirs[["main"]] <- results_dir
+  
+  return(dirs)
 }
 
-# Source utility functions
-source_dir("utils")
+# Function to format metrics for Excel export
+format_metrics_for_export <- function(node_metrics, global_metrics, file_path) {
+  wb <- openxlsx::createWorkbook()
+  
+  # Add node metrics sheet
+  openxlsx::addWorksheet(wb, "Node Metrics")
+  openxlsx::writeData(wb, "Node Metrics", node_metrics)
+  
+  # Format node metrics sheet
+  openxlsx::addStyle(wb, "Node Metrics", openxlsx::createStyle(textDecoration = "bold"), rows = 1, cols = 1:ncol(node_metrics))
+  openxlsx::setColWidths(wb, "Node Metrics", cols = 1:ncol(node_metrics), widths = "auto")
+  
+  # Add global metrics sheet
+  openxlsx::addWorksheet(wb, "Global Metrics")
+  openxlsx::writeData(wb, "Global Metrics", global_metrics)
+  
+  # Format global metrics sheet
+  openxlsx::addStyle(wb, "Global Metrics", openxlsx::createStyle(textDecoration = "bold"), rows = 1, cols = 1:ncol(global_metrics))
+  openxlsx::setColWidths(wb, "Global Metrics", cols = 1:ncol(global_metrics), widths = "auto")
+  
+  # Save workbook
+  openxlsx::saveWorkbook(wb, file_path, overwrite = TRUE)
+}
