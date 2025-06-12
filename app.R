@@ -17,10 +17,10 @@ ui <- shinydashboardPlus::dashboardPage(
     titleWidth = 300,
     controlbarIcon = icon("cogs"),
     userOutput("userBox"),
-    rightUi = tagList(
-      actionButton("about_btn", "About", icon = icon("info-circle")),
-      actionButton("help_btn", "Help", icon = icon("question-circle"))
-    )
+    #rightUi = tagList(
+    #  actionButton("about_btn", "About", icon = icon("info-circle")),
+    #  actionButton("help_btn", "Help", icon = icon("question-circle"))
+    #)
   ),
   
   # Dashboard sidebar
